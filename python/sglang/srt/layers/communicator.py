@@ -1087,6 +1087,22 @@ class FfnExit:
         )
 
 
+def complete_deferred_allreduce(hidden_states: torch.Tensor) -> torch.Tensor:
+    """Run the all-reduce a layer left for the next layer's input norm.
+
+    For hidden states leaving this rank's layers (a pipeline-parallel send):
+    the marker does not survive the send, so the receiver would treat the
+    partial sum as complete.
+    """
+    if (
+        hasattr(hidden_states, "_sglang_needs_allreduce_fusion")
+        and hidden_states._sglang_needs_allreduce_fusion
+    ):
+        hidden_states = deferred_post_experts_all_reduce(hidden_states)
+        hidden_states._sglang_needs_allreduce_fusion = False
+    return hidden_states
+
+
 @dataclass
 class CommunicateContext:
     process_group_sizes: Dict[ScatterMode, int]
