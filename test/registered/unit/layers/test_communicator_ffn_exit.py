@@ -163,6 +163,50 @@ class TestCompleteDeferredAllreduce(CustomTestCase):
         self.assertIsNone(complete_deferred_allreduce(None))
         self.all_reduce.assert_not_called()
 
+    def test_finish_layer_stack_completes_the_last_layer(self):
+        for fuse in (True, False):
+            with self.subTest(fuse=fuse):
+                self.all_reduce.reset_mock()
+                communicator = make_communicator(fuse=fuse, reduce_scatter=False)
+                residual = torch.zeros(3, 4)
+                with communicator.ffn_exit(object()) as ffn_exit:
+                    hidden_states = torch.ones(3, 4)
+                hidden_states, _ = ffn_exit.finish(hidden_states, residual)
+
+                hidden_states, residual_out = communicator.finish_layer_stack(
+                    hidden_states, residual, object()
+                )
+                self.assertEqual(self.all_reduce.call_count, int(fuse))
+                expected = 3.0 if fuse else 2.0  # all-reduce stub / postprocess stub
+                torch.testing.assert_close(hidden_states, torch.full((3, 4), expected))
+                self.assertIs(residual_out, residual)
+
+    def test_finish_layer_stack_compiles_without_graph_breaks(self):
+        communicator = LayerCommunicator.__new__(LayerCommunicator)
+        communicator.should_fuse_mlp_allreduce_with_next_layer = lambda forward_batch: (
+            True
+        )
+        communicator.should_use_reduce_scatter = lambda forward_batch: False
+        forward_batch = object()
+
+        def last_layer(hidden_states, residual):
+            with communicator.ffn_exit(forward_batch) as ffn_exit:
+                hidden_states = hidden_states * 2
+            hidden_states, residual = ffn_exit.finish(hidden_states, residual)
+            return communicator.finish_layer_stack(
+                hidden_states, residual, forward_batch
+            )
+
+        with patch(
+            "sglang.srt.layers.communicator.deferred_post_experts_all_reduce",
+            lambda hidden_states: hidden_states * 3,
+        ):
+            torch._dynamo.reset()
+            compiled = torch.compile(last_layer, backend="eager", fullgraph=True)
+            hidden_states, residual = compiled(torch.ones(3, 4), torch.zeros(3, 4))
+        torch.testing.assert_close(hidden_states, torch.full((3, 4), 6.0))
+        torch.testing.assert_close(residual, torch.zeros(3, 4))
+
 
 if __name__ == "__main__":
     unittest.main()
