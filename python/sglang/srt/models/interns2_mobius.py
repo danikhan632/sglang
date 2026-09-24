@@ -11,7 +11,11 @@ from sglang.srt.configs.interns2_mobius import (
     InternS2MobiusTextConfig,
 )
 from sglang.srt.distributed import tensor_model_parallel_all_reduce
-from sglang.srt.layers.communicator import LayerCommunicator, LayerScatterModes
+from sglang.srt.layers.communicator import (
+    LayerCommunicator,
+    LayerScatterModes,
+    complete_deferred_allreduce,
+)
 from sglang.srt.layers.dp_attention import is_dp_attention_enabled
 from sglang.srt.layers.layernorm import GemmaRMSNorm
 from sglang.srt.layers.linear import (
@@ -802,6 +806,7 @@ class InternS2MobiusForCausalLM(Qwen3_5ForCausalLM):
                 and layer_idx < 3
             ):
                 start = self.hidden_size * layer_idx
+                hidden_states = complete_deferred_allreduce(hidden_states)
                 hidden_states.add_(
                     input_deepstack_embeds[:, start : start + self.hidden_size]
                 )
